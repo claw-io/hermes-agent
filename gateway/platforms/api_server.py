@@ -2973,6 +2973,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_submission": True,
                 "run_status": True,
                 "run_events_sse": True,
+                "run_context_breakdown": True,
                 "run_stop": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
@@ -6099,6 +6100,64 @@ class APIServerAdapter(BasePlatformAdapter):
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
 
+    def _sanitize_run_context_breakdown(self, agent: Any, messages: Any) -> Optional[Dict[str, Any]]:
+        """Return the bounded numeric context snapshot safe for API egress."""
+        try:
+            from agent.context_breakdown import compute_session_context_breakdown
+
+            raw = compute_session_context_breakdown(agent, messages)
+        except Exception:
+            logger.debug("Run context breakdown unavailable", exc_info=True)
+            return None
+        if not isinstance(raw, dict):
+            return None
+
+        max_safe_int = 9_007_199_254_740_991
+
+        def _number(name: str) -> int:
+            try:
+                return max(0, min(max_safe_int, int(raw.get(name, 0) or 0)))
+            except (TypeError, ValueError, OverflowError):
+                return 0
+
+        categories_raw = raw.get("categories")
+        if not isinstance(categories_raw, (list, tuple)):
+            return None
+        categories = []
+        try:
+            category_items = list(categories_raw)[:32]
+        except Exception:
+            return None
+        for item in category_items:
+            if not isinstance(item, dict):
+                continue
+            category_id = item.get("id")
+            label = item.get("label")
+            if not isinstance(category_id, str) or not isinstance(label, str):
+                continue
+            tokens = 0
+            try:
+                tokens = max(0, min(max_safe_int, int(item.get("tokens", 0) or 0)))
+            except (TypeError, ValueError, OverflowError):
+                pass
+            if tokens <= 0:
+                continue
+            categories.append({
+                "id": category_id[:64],
+                "label": label[:128],
+                "tokens": tokens,
+            })
+        if not categories:
+            return None
+        return {
+            "categories": categories[:32],
+            "context_max": _number("context_max"),
+            "context_percent": min(100, _number("context_percent")),
+            "context_used": _number("context_used"),
+            "estimated_total": _number("estimated_total"),
+            "model": str(raw.get("model") or "")[:256],
+        }
+
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
         now = time.time()
@@ -6503,12 +6562,26 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    result_messages = result.get("messages") if isinstance(result, dict) else None
+                    if not isinstance(result_messages, list):
+                        result_messages = [
+                            *conversation_history,
+                            {"role": "user", "content": user_message},
+                            {"role": "assistant", "content": final_response},
+                        ]
+                    context_breakdown = self._sanitize_run_context_breakdown(
+                        agent, result_messages
+                    )
+                    completed_fields = {}
+                    if context_breakdown is not None:
+                        completed_fields["context_breakdown"] = context_breakdown
                     _put_event_if_active({
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "output": final_response,
                         "usage": usage,
+                        **completed_fields,
                     })
                     self._set_run_status(
                         run_id,
@@ -6516,6 +6589,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         output=final_response,
                         usage=usage,
                         last_event="run.completed",
+                        **completed_fields,
                     )
             except asyncio.CancelledError:
                 self._set_run_status(

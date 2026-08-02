@@ -304,6 +304,118 @@ class TestRunStatus:
 
 class TestRunEvents:
     @pytest.mark.asyncio
+    async def test_completed_event_and_status_include_sanitized_context_breakdown(self, adapter):
+        app = _create_runs_app(adapter)
+        raw_breakdown = {
+            "categories": [
+                {"id": "conversation", "label": "Conversation", "tokens": 17, "color": "secret-css"},
+                {"id": "x" * 200, "label": "L" * 300, "tokens": 10**30},
+                {"id": "bad", "label": "Bad", "tokens": -1},
+            ],
+            "context_max": 128_000,
+            "context_percent": 12,
+            "context_used": 15_000,
+            "estimated_total": 17,
+            "model": "test/model",
+            "prompt": "must not escape",
+            "messages": [{"content": "must not escape"}],
+        }
+        result_messages = [{"role": "user", "content": "private transcript"}]
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, patch(
+                "agent.context_breakdown.compute_session_context_breakdown",
+                return_value=raw_breakdown,
+            ) as compute:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "done",
+                    "messages": result_messages,
+                }
+                mock_agent.session_prompt_tokens = 10
+                mock_agent.session_completion_tokens = 5
+                mock_agent.session_total_tokens = 15
+                mock_create.return_value = mock_agent
+
+                start = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await start.json())["run_id"]
+                events_response = await cli.get(f"/v1/runs/{run_id}/events")
+                events_body = await events_response.text()
+                status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+
+        compute.assert_called_once_with(mock_agent, result_messages)
+        expected = status["context_breakdown"]
+        assert '"context_breakdown"' in events_body
+        assert expected == {
+            "categories": [
+                {"id": "conversation", "label": "Conversation", "tokens": 17},
+                {"id": "x" * 64, "label": "L" * 128, "tokens": 9_007_199_254_740_991},
+            ],
+            "context_max": 128_000,
+            "context_percent": 12,
+            "context_used": 15_000,
+            "estimated_total": 17,
+            "model": "test/model",
+        }
+        serialized = str(expected) + events_body
+        assert "secret-css" not in serialized
+        assert "must not escape" not in serialized
+        assert "private transcript" not in serialized
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", [RuntimeError("boom"), ModuleNotFoundError("helper absent")])
+    async def test_helper_failure_or_absence_keeps_completed_contract_backward_compatible(
+        self, adapter, failure
+    ):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, patch(
+                "agent.context_breakdown.compute_session_context_breakdown",
+                side_effect=failure,
+            ):
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done", "messages": []}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                start = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await start.json())["run_id"]
+                events_response = await cli.get(f"/v1/runs/{run_id}/events")
+                events_body = await events_response.text()
+                status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+
+        assert status["status"] == "completed"
+        assert status["output"] == "done"
+        assert "context_breakdown" not in status
+        assert "run.completed" in events_body
+        assert "context_breakdown" not in events_body
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("malformed", [{"categories": 1}, {"categories": {"x": 1}}])
+    async def test_malformed_helper_output_does_not_fail_completed_run(self, adapter, malformed):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create, patch(
+                "agent.context_breakdown.compute_session_context_breakdown",
+                return_value=malformed,
+            ):
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done", "messages": []}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                start = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await start.json())["run_id"]
+                events_body = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+                status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+        assert status["status"] == "completed"
+        assert "context_breakdown" not in status
+        assert "run.completed" in events_body
+
+    @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""
         app = _create_runs_app(adapter)
