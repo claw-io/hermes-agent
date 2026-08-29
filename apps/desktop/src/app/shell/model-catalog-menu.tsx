@@ -376,6 +376,19 @@ export function ModelCatalogMenu({
             // spans every model regardless of collapse state).
             const collapsed = collapsedProviders.includes(slug) && !search
 
+            // A user-defined provider's slug is the bare config key the user
+            // typed — surface it beside the (often auto-generated) display name
+            // so two similarly-named local endpoints stay distinguishable. Skip
+            // when they already match to avoid restating the same word twice.
+            const showProviderSlug =
+              group.provider.is_user_defined && normalize(group.provider.slug) !== normalize(group.provider.name)
+
+            // Rows whose prettified name+tag collide need their canonical id
+            // surfaced — an aggregator can serve the same base model over
+            // several upstream routes, which otherwise renders as identical,
+            // unpickable rows (#98122).
+            const ambiguousNames = duplicateDisplayNames(group.families)
+
             return (
               <DropdownMenuGroup className="py-0.5" key={slug}>
                 <DropdownMenuItem
@@ -388,6 +401,9 @@ export function ModelCatalogMenu({
                 >
                   <span className="truncate">
                     <HighlightMatches query={search} text={group.provider.name} />
+                    {showProviderSlug ? (
+                      <span className="font-normal normal-case tracking-normal opacity-70"> {group.provider.slug}</span>
+                    ) : null}
                   </span>
                   <DisclosureCaret
                     className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"
@@ -406,7 +422,8 @@ export function ModelCatalogMenu({
                         : null
 
                     const isCurrent = activeId !== null
-                    const name = modelDisplayParts(family.id).name
+                    const { name, tag } = modelDisplayParts(family.id)
+                    const showCanonicalId = ambiguousNames.has(displayNameKey(name, tag))
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Effective settings for this row: the live choice when it's
@@ -453,10 +470,21 @@ export function ModelCatalogMenu({
                           }}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches query={search} text={name} />
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                          </span>
+                          {/* A div wrapper keeps the composed row text out of the
+                              SPAN query space: test helpers match the row by
+                              tag name, and nested SPANs would double-match. */}
+                          <div className="min-w-0 flex-1">
+                            <span className="block truncate">
+                              <HighlightMatches query={search} text={name} />
+                              {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
+                              {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                            </span>
+                            {showCanonicalId ? (
+                              <span className="block truncate text-[0.625rem] text-(--ui-text-tertiary)">
+                                {family.id}
+                              </span>
+                            ) : null}
+                          </div>
                           {isCurrent ? (
                             <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
                           ) : null}
@@ -535,6 +563,36 @@ export function ModelCatalogMenu({
 
 /** Re-exported so callers building a footer row match the catalog's rows. */
 export { dropdownMenuRow }
+
+/** Stable key for a prettified name+tag pair — the unit that must be unique
+ *  within a group for two rows to read as distinct models. */
+const displayNameKey = (name: string, tag: string): string => `${name} ${tag}`
+
+/** Family ids whose prettified name+tag collide with a sibling in the same
+ *  group. An aggregator can serve the same base model over several upstream
+ *  routes (e.g. `vertex/anthropic/claude-3-opus` vs
+ *  `bedrock/anthropic/claude-3-opus`), which collapse to the same display
+ *  name even though `modelDisplayParts` never touches the route prefix. */
+function duplicateDisplayNames(families: readonly ModelFamily[]): Set<string> {
+  const counts = new Map<string, number>()
+
+  for (const family of families) {
+    const { name, tag } = modelDisplayParts(family.id)
+    const key = displayNameKey(name, tag)
+
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+
+  const duplicates = new Set<string>()
+
+  for (const [key, count] of counts) {
+    if (count > 1) {
+      duplicates.add(key)
+    }
+  }
+
+  return duplicates
+}
 
 // Collapsed we show the user's chosen models (or the curated default); typing
 // spans every available model so anything is reachable past the cut. A search

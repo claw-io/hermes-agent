@@ -106,3 +106,63 @@ describe('the catalog owns model curation', () => {
     expect($modelVisibilityOpen.get()).toBe(true)
   })
 })
+
+// #98122: an aggregator can serve the same base model over several upstream
+// routes. Two distinct ids that prettify to the same name must stay
+// distinguishable, or one of them is simply unreachable from the picker.
+describe('disambiguating collided display names', () => {
+  it('surfaces the canonical id on rows whose prettified name collides', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'Aggregator',
+          slug: 'aggregator',
+          models: ['vertex/anthropic/claude-3-opus', 'bedrock/anthropic/claude-3-opus']
+        }
+      ]
+    })
+
+    renderMenu()
+
+    // Both ids prettify to the same "3 Opus" label — the collision the bug
+    // reported. Each row's own canonical id must still be findable.
+    await screen.findByText('vertex/anthropic/claude-3-opus')
+    expect(screen.getByText('bedrock/anthropic/claude-3-opus')).toBeTruthy()
+  })
+
+  it('does not show a canonical id when a provider has no colliding names', async () => {
+    renderMenu()
+
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    expect(screen.queryByText('gemini-3.1-pro')).toBeNull()
+    expect(screen.queryByText('gemini-2.5-flash')).toBeNull()
+  })
+})
+
+describe('provider header slug', () => {
+  it('shows the bare config key beside a user-defined provider whose display name differs', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'My Custom Server',
+          slug: 'my-custom-server',
+          is_user_defined: true,
+          models: ['some-model']
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText('my-custom-server')
+  })
+
+  it('does not duplicate the slug for a canonical provider', async () => {
+    renderMenu()
+
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    expect(screen.queryByText('google')).toBeNull()
+  })
+})
