@@ -13,7 +13,7 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, modelDisplayParts, modelSlugSuffix } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import {
   $visibleModels,
@@ -143,6 +143,7 @@ export function ModelVisibilityDialog({
                   {!collapsed &&
                     models.map(family => {
                       const { name, tag } = modelDisplayParts(family.id)
+                      const slugSuffix = modelSlugSuffix(family.id)
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (
@@ -153,6 +154,12 @@ export function ModelVisibilityDialog({
                           <span className="min-w-0 flex-1 truncate">
                             <HighlightMatches query={search} text={name} />
                             {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
+                            {slugSuffix ? (
+                              <span className="text-(--ui-text-quaternary)" title={family.id}>
+                                {' '}
+                                {slugSuffix}
+                              </span>
+                            ) : null}
                           </span>
                           <Switch
                             checked={visible.has(key)}
