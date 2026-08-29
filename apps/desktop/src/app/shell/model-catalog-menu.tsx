@@ -460,16 +460,21 @@ export function ModelCatalogMenu({
                           }}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches query={search} text={name} />
-                            {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
-                            {slugSuffix ? (
-                              <span className="text-(--ui-text-quaternary)" title={family.id}>
-                                {' '}
-                                {slugSuffix}
-                              </span>
-                            ) : null}
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                          {/* Two-line row: pretty name (+variant tag, +effort) on
+                              top, canonical slug as a muted subtitle beneath —
+                              ALWAYS, not only on collisions. Aggregators serve
+                              the same pretty name under many upstream prefixes,
+                              and which ones are enabled is only knowable from
+                              the slug (#58566, #94706). */}
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">
+                              <HighlightMatches query={search} text={name} />
+                              {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
+                              {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                            </span>
+                            <span className="block truncate text-[0.625rem] text-(--ui-text-quaternary)" title={family.id}>
+                              {slugSuffix}
+                            </span>
                           </span>
                           {isCurrent ? (
                             <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" />
